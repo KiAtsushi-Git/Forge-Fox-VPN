@@ -1,0 +1,20 @@
+/* ── Midnight theme (pure deep blacks) ───────────────────────────────────── */
+:root {
+  --bg:            #000000;
+  --sidebar-bg:    #080808;
+  --titlebar-bg:   #040404;
+  --surface:       #101010;
+  --surface-hover: #181818;
+  --surface-active:#202020;
+  --border:        rgba(255,255,255,0.06);
+  --text:          #f0f0f0;
+  --text-dim:      #909090;
+  --text-muted:    #505050;
+  --input-bg:      #080808;
+  --log-bg:        #040404;
+  --accent:        #7c3aed;
+  --accent-hover:  #9353ff;
+  --accent-dim:    rgba(124,58,237,0.15);
+  --accent-glow:   rgba(124,58,237,0.35);
+  --accent-glow2:  rgba(124,58,237,0.12);
+}

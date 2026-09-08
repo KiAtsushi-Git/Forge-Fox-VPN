@@ -1,0 +1,20 @@
+/* ── Ocean theme (deep blue tones) ───────────────────────────────────────── */
+:root {
+  --bg:            #0a0e1a;
+  --sidebar-bg:    #0d1220;
+  --titlebar-bg:   #080c18;
+  --surface:       #121830;
+  --surface-hover: #1a2040;
+  --surface-active:#222848;
+  --border:        rgba(100,160,255,0.10);
+  --text:          #d8e8ff;
+  --text-dim:      #8090b8;
+  --text-muted:    #4a5878;
+  --input-bg:      #090d1e;
+  --log-bg:        #060a16;
+  --accent:        #38bdf8;
+  --accent-hover:  #7dd3fc;
+  --accent-dim:    rgba(56,189,248,0.12);
+  --accent-glow:   rgba(56,189,248,0.30);
+  --accent-glow2:  rgba(56,189,248,0.10);
+}

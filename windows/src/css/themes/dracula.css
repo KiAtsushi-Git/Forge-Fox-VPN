@@ -1,0 +1,20 @@
+/* ── Dracula theme (purple on dark slate) ────────────────────────────────── */
+:root {
+  --bg:            #282a36;
+  --sidebar-bg:    #21222c;
+  --titlebar-bg:   #1d1e26;
+  --surface:       #343746;
+  --surface-hover: #3e4152;
+  --surface-active:#484b5e;
+  --border:        rgba(248,248,242,0.09);
+  --text:          #f8f8f2;
+  --text-dim:      #b8b8c8;
+  --text-muted:    #6272a4;
+  --input-bg:      #22232d;
+  --log-bg:        #1e1f28;
+  --accent:        #bd93f9;
+  --accent-hover:  #d4b3ff;
+  --accent-dim:    rgba(189,147,249,0.14);
+  --accent-glow:   rgba(189,147,249,0.32);
+  --accent-glow2:  rgba(189,147,249,0.12);
+}

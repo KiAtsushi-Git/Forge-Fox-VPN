@@ -1,0 +1,20 @@
+/* ── Dark theme (default) ─────────────────────────────────────────────────── */
+:root {
+  --bg:            #0f0f14;
+  --sidebar-bg:    #13131a;
+  --titlebar-bg:   #0d0d12;
+  --surface:       #1a1a24;
+  --surface-hover: #222230;
+  --surface-active:#2a2a3a;
+  --border:        rgba(255,255,255,0.08);
+  --text:          #e8e8f0;
+  --text-dim:      #a0a0b8;
+  --text-muted:    #60607a;
+  --input-bg:      #12121a;
+  --log-bg:        #0b0b10;
+  --accent:        #ff6b00;
+  --accent-hover:  #ff8533;
+  --accent-dim:    rgba(255,107,0,0.12);
+  --accent-glow:   rgba(255,107,0,0.3);
+  --accent-glow2:  rgba(255,107,0,0.1);
+}

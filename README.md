@@ -58,11 +58,14 @@ sysctl, NAT, TUN и SSH.
 ## 🗂 Содержимое репозитория
 
 ```
-android/   → APK-сборки для Android
-windows/   → установщики для Windows (NSIS .exe и .msi)
+android/   → полный исходный код Android-клиента + готовый APK
+windows/   → полный исходный код Windows-клиента (Tauri) + установщики (.exe / .msi)
 ```
 
-Исходные коды проектов:
+Это open-source проект — каждый клиент можно собрать из исходников
+(инструкции — в README внутри папок `android/` и `windows/`).
+
+Исходные коды также ведутся в GitLab:
 - Клиент Windows: [forgefoxvpn (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn)
 - Клиент Android: [forgefoxvpn-android (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn-android)
 - Панель Provider: [forgefoxvpn-provider (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn-provider) · [GitHub](https://github.com/KiAtsushi-Git/Forge-Fox-VPN-Self-Host-Provider)

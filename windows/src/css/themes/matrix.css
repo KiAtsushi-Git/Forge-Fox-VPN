@@ -1,0 +1,20 @@
+/* ── Matrix theme (phosphor green on black) ──────────────────────────────── */
+:root {
+  --bg:            #000800;
+  --sidebar-bg:    #010e01;
+  --titlebar-bg:   #000600;
+  --surface:       #041604;
+  --surface-hover: #072007;
+  --surface-active:#0a2c0a;
+  --border:        rgba(0,255,80,0.12);
+  --text:          #c8ffc8;
+  --text-dim:      #6ab86a;
+  --text-muted:    #2e6a2e;
+  --input-bg:      #010c01;
+  --log-bg:        #000500;
+  --accent:        #00ff50;
+  --accent-hover:  #5cff8c;
+  --accent-dim:    rgba(0,255,80,0.12);
+  --accent-glow:   rgba(0,255,80,0.32);
+  --accent-glow2:  rgba(0,255,80,0.12);
+}

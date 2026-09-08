@@ -1,0 +1,20 @@
+/* ── Coffee theme (warm browns) ──────────────────────────────────────────── */
+:root {
+  --bg:            #16100c;
+  --sidebar-bg:    #1c1410;
+  --titlebar-bg:   #120d0a;
+  --surface:       #241a14;
+  --surface-hover: #30241c;
+  --surface-active:#3c2e24;
+  --border:        rgba(220,180,140,0.10);
+  --text:          #f0e2d4;
+  --text-dim:      #b89a80;
+  --text-muted:    #6e5a48;
+  --input-bg:      #140e0a;
+  --log-bg:        #0f0a07;
+  --accent:        #d4a373;
+  --accent-hover:  #e8bc8e;
+  --accent-dim:    rgba(212,163,115,0.14);
+  --accent-glow:   rgba(212,163,115,0.30);
+  --accent-glow2:  rgba(212,163,115,0.10);
+}

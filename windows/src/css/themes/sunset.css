@@ -1,0 +1,20 @@
+/* ── Sunset theme (warm amber on plum) ───────────────────────────────────── */
+:root {
+  --bg:            #1a1018;
+  --sidebar-bg:    #20141e;
+  --titlebar-bg:   #160d14;
+  --surface:       #281a26;
+  --surface-hover: #342230;
+  --surface-active:#402a3a;
+  --border:        rgba(255,180,120,0.10);
+  --text:          #f5e4dc;
+  --text-dim:      #c09a8e;
+  --text-muted:    #7a5a58;
+  --input-bg:      #170e15;
+  --log-bg:        #120a10;
+  --accent:        #fb923c;
+  --accent-hover:  #fdba74;
+  --accent-dim:    rgba(251,146,60,0.13);
+  --accent-glow:   rgba(251,146,60,0.30);
+  --accent-glow2:  rgba(251,146,60,0.10);
+}

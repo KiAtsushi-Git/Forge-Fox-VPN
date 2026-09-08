@@ -1,0 +1,20 @@
+/* ── Slate theme (neutral grey, teal accent) ─────────────────────────────── */
+:root {
+  --bg:            #131518;
+  --sidebar-bg:    #171a1e;
+  --titlebar-bg:   #101215;
+  --surface:       #1e2228;
+  --surface-hover: #272c34;
+  --surface-active:#323841;
+  --border:        rgba(255,255,255,0.08);
+  --text:          #e2e6ea;
+  --text-dim:      #9aa4b0;
+  --text-muted:    #5c6672;
+  --input-bg:      #15181c;
+  --log-bg:        #101216;
+  --accent:        #14b8a6;
+  --accent-hover:  #2dd4bf;
+  --accent-dim:    rgba(20,184,166,0.13);
+  --accent-glow:   rgba(20,184,166,0.30);
+  --accent-glow2:  rgba(20,184,166,0.10);
+}

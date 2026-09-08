@@ -1,0 +1,20 @@
+/* ── Cyberpunk theme (neon magenta on near-black) ────────────────────────── */
+:root {
+  --bg:            #0d0014;
+  --sidebar-bg:    #12001c;
+  --titlebar-bg:   #0a0010;
+  --surface:       #1a0628;
+  --surface-hover: #260c38;
+  --surface-active:#331248;
+  --border:        rgba(255,60,200,0.14);
+  --text:          #f0d8ff;
+  --text-dim:      #b088c8;
+  --text-muted:    #6a4880;
+  --input-bg:      #120018;
+  --log-bg:        #0b0010;
+  --accent:        #f0f;
+  --accent-hover:  #ff5cff;
+  --accent-dim:    rgba(255,0,255,0.14);
+  --accent-glow:   rgba(255,0,255,0.38);
+  --accent-glow2:  rgba(255,0,255,0.14);
+}

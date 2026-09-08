@@ -1,0 +1,20 @@
+/* ── Sakura theme (soft light, pink accent) ──────────────────────────────── */
+:root {
+  --bg:            #fdf6f8;
+  --sidebar-bg:    #f7eaef;
+  --titlebar-bg:   #f2e0e7;
+  --surface:       #ffffff;
+  --surface-hover: #fbeef2;
+  --surface-active:#f6e2e9;
+  --border:        rgba(120,40,70,0.10);
+  --text:          #2a1a20;
+  --text-dim:      #6e4a58;
+  --text-muted:    #a88a95;
+  --input-bg:      #fefafc;
+  --log-bg:        #f7edf1;
+  --accent:        #e8497e;
+  --accent-hover:  #f4649a;
+  --accent-dim:    rgba(232,73,126,0.10);
+  --accent-glow:   rgba(232,73,126,0.25);
+  --accent-glow2:  rgba(232,73,126,0.08);
+}

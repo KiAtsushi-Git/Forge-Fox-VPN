@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ForgeFox VPN</title>
+  <link rel="stylesheet" href="css/main.css" />
+  <link rel="stylesheet" id="theme-css" href="css/themes/dark.css" />
+</head>
+<body>
+  <!-- Custom titlebar -->
+  <div class="titlebar" data-tauri-drag-region>
+    <div class="titlebar-logo">
+      <span class="titlebar-icon">🦊</span>
+      <span class="titlebar-title">ForgeFox VPN</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" id="btn-minimize" title="Свернуть">─</button>
+      <button class="titlebar-btn" id="btn-maximize" title="Развернуть">□</button>
+      <button class="titlebar-btn titlebar-btn--close" id="btn-close" title="Закрыть">✕</button>
+    </div>
+  </div>
+
+  <!-- App layout -->
+  <div class="app-layout">
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="sidebar-top">
+        <button class="nav-item active" data-page="dashboard">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Dashboard</span>
+        </button>
+        <button class="nav-item" data-page="servers">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Серверы</span>
+        </button>
+        <button class="nav-item" data-page="rules">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Правила</span>
+        </button>
+        <button class="nav-item" data-page="selfhost">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Self-Host</span>
+        </button>
+        <button class="nav-item" data-page="logs">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Логи</span>
+        </button>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-page="settings">
+          <span class="nav-icon">⬡</span>
+          <span class="nav-label">Настройки</span>
+        </button>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="content">
+
+      <!-- ═══ DASHBOARD PAGE ════════════════════════════════════════════════ -->
+      <section class="page active" id="page-dashboard">
+        <div class="status-hero">
+          <div class="status-ring" id="status-ring">
+            <button class="connect-btn" id="btn-connect">
+              <!-- Inline SVG, not a glyph: U+23FB POWER SYMBOL is missing from the
+                   Windows font stack and WebView2 renders it as a tofu box. -->
+              <span class="connect-btn-icon" id="connect-icon">
+                <svg class="icon-power" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M7.8 5.4a8 8 0 1 0 8.4 0" />
+                  <path d="M12 2.5v8.8" />
+                </svg>
+              </span>
+            </button>
+          </div>
+          <div class="status-label" id="status-label">НЕ ЗАЩИЩЕНО</div>
+          <div class="status-sub" id="status-sub">Нажмите для подключения</div>
+        </div>
+
+        <div class="stats-row" id="stats-row" style="display:none">
+          <div class="stat-card">
+            <div class="stat-value" id="stat-uptime">0:00</div>
+            <div class="stat-name">Время</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-tx">0 B</div>
+            <div class="stat-name">↑ Отправлено</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-rx">0 B</div>
+            <div class="stat-name">↓ Получено</div>
+          </div>
+        </div>
+
+        <div class="server-selector card" id="server-selector">
+          <div class="card-label">Сервер</div>
+          <div class="server-sel-row">
+            <div class="server-sel-info">
+              <div class="server-sel-name" id="sel-server-name">Не выбран</div>
+              <div class="server-sel-addr" id="sel-server-addr">─</div>
+            </div>
+            <button class="btn btn-ghost" onclick="goToPage('servers')">Изменить →</button>
+          </div>
+        </div>
+
+        <div class="split-toggle-row card">
+          <div>
+            <div class="card-label">Правила исключений</div>
+            <div class="card-sub" id="split-mode-desc">Bypass — всё через VPN, кроме списка</div>
+            <div class="card-sub split-live" id="split-live-info"></div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="toggle-split" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ═══ SERVERS PAGE ══════════════════════════════════════════════════ -->
+      <section class="page" id="page-servers">
+        <div class="page-header">
+          <h2>Серверы</h2>
+          <div class="page-actions">
+            <button class="btn btn-primary" id="btn-add-server">+ Добавить</button>
+            <button class="btn btn-ghost" id="btn-add-sub">+ Подписка</button>
+          </div>
+        </div>
+
+        <div class="search-bar">
+          <input type="text" class="input" id="server-search" placeholder="🔍 Поиск серверов…" />
+        </div>
+
+        <div class="server-list" id="server-list">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Add server dialog -->
+        <div class="modal hidden" id="modal-server">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3 id="modal-server-title">Добавить сервер</h3>
+              <button class="modal-close" onclick="closeModal('modal-server')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-row">
+                <label>SSH Link <span class="form-hint">(ssh://user:pass@host:port#name)</span></label>
+                <input type="text" class="input" id="srv-link" placeholder="ssh://root:pass@1.2.3.4:22#My Server" />
+                <button class="btn btn-ghost mt-1" id="btn-parse-link">Разобрать ссылку</button>
+              </div>
+              <div class="form-divider">— или вручную —</div>
+              <div class="form-grid">
+                <div class="form-row">
+                  <label>Имя</label>
+                  <input type="text" class="input" id="srv-name" placeholder="My Server" />
+                </div>
+                <div class="form-row">
+                  <label>Хост / IP</label>
+                  <input type="text" class="input" id="srv-host" placeholder="1.2.3.4" />
+                </div>
+                <div class="form-row">
+                  <label>Порт</label>
+                  <input type="number" class="input" id="srv-port" value="22" min="1" max="65535" />
+                </div>
+                <div class="form-row">
+                  <label>Логин</label>
+                  <input type="text" class="input" id="srv-user" placeholder="root" />
+                </div>
+                <div class="form-row">
+                  <label>Пароль</label>
+                  <input type="password" class="input" id="srv-pass" placeholder="••••••••" />
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-server')">Отмена</button>
+              <button class="btn btn-primary" id="btn-save-server">Сохранить</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Add subscription dialog -->
+        <div class="modal hidden" id="modal-sub">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Добавить подписку</h3>
+              <button class="modal-close" onclick="closeModal('modal-sub')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-row">
+                <label>URL подписки</label>
+                <input type="text" class="input" id="sub-url" placeholder="https://example.com/sub.txt" />
+              </div>
+              <div class="form-row">
+                <label>Название</label>
+                <input type="text" class="input" id="sub-name" placeholder="Моя подписка" />
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-sub')">Отмена</button>
+              <button class="btn btn-primary" id="btn-fetch-sub">Загрузить</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ SELF-HOST PAGE ════════════════════════════════════════════════ -->
+      <section class="page" id="page-selfhost">
+        <div class="page-header">
+          <h2>Self-Host</h2>
+          <div class="page-actions">
+            <button class="btn btn-primary" id="btn-add-selfhost">+ Добавить сервер</button>
+          </div>
+        </div>
+
+        <div class="server-list" id="selfhost-list">
+          <div style="text-align:center;padding:40px;color:var(--text-muted)">Нет добавленных серверов. Нажмите «+ Добавить сервер».</div>
+        </div>
+
+        <!-- Add self-host dialog -->
+        <div class="modal hidden" id="modal-selfhost">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Добавить Self-Host сервер</h3>
+              <button class="modal-close" onclick="closeModal('modal-selfhost')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-grid">
+                <div class="form-row">
+                  <label>Имя</label>
+                  <input type="text" class="input" id="sh-name" placeholder="My Node" />
+                </div>
+                <div class="form-row">
+                  <label>Хост / IP</label>
+                  <input type="text" class="input" id="sh-host" placeholder="1.2.3.4" />
+                </div>
+                <div class="form-row">
+                  <label>Порт</label>
+                  <input type="number" class="input" id="sh-port" value="22" min="1" max="65535" />
+                </div>
+                <div class="form-row">
+                  <label>Пользователь</label>
+                  <input type="text" class="input" id="sh-user" placeholder="root" />
+                </div>
+                <div class="form-row">
+                  <label>Пароль / SSH ключ</label>
+                  <input type="password" class="input" id="sh-pass" placeholder="••••••••" />
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-selfhost')">Отмена</button>
+              <button class="btn btn-primary" id="btn-save-selfhost">Сохранить</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Install Choice modal -->
+        <div class="modal hidden" id="modal-sh-install">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Выбор установки</h3>
+              <button class="modal-close" onclick="closeModal('modal-sh-install')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="setting-row card" style="cursor:pointer" id="btn-install-host">
+                <div>
+                  <div class="setting-name">Forge Fox VPN Host</div>
+                  <div class="setting-desc" style="color:var(--text-muted);font-size:13px;margin-top:4px">Просто развернуть сам впн чтобы можно было подключаться</div>
+                </div>
+              </div>
+              <div class="setting-row card" style="cursor:pointer; margin-top: 10px;" id="btn-install-provider">
+                <div>
+                  <div class="setting-name">Forge Fox VPN Provider 🚀</div>
+                  <div class="setting-desc" style="color:var(--text-muted);font-size:13px;margin-top:4px">Полноценная Web-панель для управления подписками и серверами</div>
+                </div>
+              </div>
+              
+              <div id="provider-setup-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+                <div class="form-row">
+                  <label>База данных</label>
+                  <select class="input" id="prov-db-type">
+                    <option value="sqlite">SQLite (встроенная, просто)</option>
+                    <option value="postgres">PostgreSQL (через Docker)</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Логин админа Web-панели</label>
+                  <input type="text" class="input" id="prov-admin-user" placeholder="admin" value="admin" />
+                </div>
+                <div class="form-row">
+                  <label>Пароль админа Web-панели</label>
+                  <input type="password" class="input" id="prov-admin-pass" placeholder="Секретный пароль" />
+                </div>
+                <button class="btn btn-primary" id="btn-start-provider-install" style="width: 100%; margin-top: 10px;">Запустить установку Provider</button>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-sh-install')">Отмена</button>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ═══ SH USERS PAGE ════════════════════════════════════════════════ -->
+      <section class="page" id="page-sh-users">
+        <div class="page-header">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button class="icon-btn" id="btn-sh-users-back" style="font-size: 20px;">←</button>
+            <h2 id="sh-users-title">Пользователи сервера</h2>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 20px;">
+          <h3 style="margin-top:0; margin-bottom: 12px; font-size: 14px;">Добавить пользователя</h3>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div style="grid-column: 1 / -1; display: flex; gap: 8px;">
+              <input type="text" class="input" id="sh-new-user" placeholder="Имя пользователя (обязательно)" style="flex: 1;" />
+              <button class="btn btn-primary" id="btn-sh-add-user">Добавить</button>
+            </div>
+            <input type="date" class="input" id="sh-new-expiry" title="Срок жизни (опционально)" />
+            <input type="number" class="input" id="sh-new-limit" placeholder="Лимит в ГБ (в разработке)" title="Лимит по трафику" min="1" />
+          </div>
+        </div>
+
+        <h3 style="margin-bottom: 12px; font-size: 14px; color: var(--text-muted)">Список пользователей</h3>
+        <div class="server-list" id="sh-users-list">
+          <div style="text-align:center;padding:20px;color:var(--text-muted)">Загрузка...</div>
+        </div>
+      </section>
+
+      <!-- ═══ RULES PAGE ════════════════════════════════════════════════════ -->
+      <section class="page" id="page-rules">
+        <div class="page-header">
+          <h2>Правила исключений</h2>
+          <div class="page-actions">
+            <button class="btn btn-primary" id="btn-add-rule">+ Правило</button>
+            <button class="btn btn-ghost" id="btn-pick-app">+ Приложение</button>
+            <button class="btn btn-ghost" id="btn-io-rules" title="Импорт / экспорт списка">⇅</button>
+          </div>
+        </div>
+
+        <!-- Mode selector -->
+        <div class="mode-tabs card">
+          <div class="card-label">Режим</div>
+          <div class="tab-group" id="mode-tabs">
+            <button class="tab-btn active" data-mode="bypass">
+              <span class="tab-icon">🌐</span>
+              <div>
+                <div class="tab-name">Bypass</div>
+                <div class="tab-desc">Всё через VPN, кроме списка</div>
+              </div>
+            </button>
+            <button class="tab-btn" data-mode="proxy">
+              <span class="tab-icon">🎯</span>
+              <div>
+                <div class="tab-name">Proxy</div>
+                <div class="tab-desc">Только список через VPN</div>
+              </div>
+            </button>
+          </div>
+          <div class="split-status" id="split-status">
+            <span class="split-dot" id="split-dot"></span>
+            <span id="split-status-text">Правила выключены</span>
+          </div>
+        </div>
+
+        <!-- Type filter -->
+        <div class="rules-filter" id="rules-filter">
+          <button class="chip active" data-filter="all">Все</button>
+          <button class="chip" data-filter="ip">IP</button>
+          <button class="chip" data-filter="cidr">Подсети</button>
+          <button class="chip" data-filter="domain">Домены</button>
+          <button class="chip" data-filter="domain_zone">Зоны</button>
+          <button class="chip" data-filter="app">Приложения</button>
+          <input type="text" class="input input-sm rules-search" id="rules-search"
+                 placeholder="🔍 Поиск…" />
+        </div>
+
+        <!-- Rules table -->
+        <div class="rules-header">
+          <span>Тип</span><span>Значение</span><span>Вкл</span><span></span>
+        </div>
+        <div class="rules-list" id="rules-list">
+          <!-- Populated by JS -->
+        </div>
+        <div class="rules-empty hidden" id="rules-empty">
+          <div class="empty-icon">📋</div>
+          <div>Правила не добавлены</div>
+        </div>
+
+        <!-- Add rule dialog -->
+        <div class="modal hidden" id="modal-rule">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Добавить правило</h3>
+              <button class="modal-close" onclick="closeModal('modal-rule')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-row">
+                <label>Тип правила</label>
+                <select class="input" id="rule-type">
+                  <option value="ip">IP адрес</option>
+                  <option value="cidr">Подсеть (CIDR)</option>
+                  <option value="domain">Домен (точно)</option>
+                  <option value="domain_zone">Доменная зона (+ поддомены)</option>
+                  <option value="app">Приложение (.exe)</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label id="rule-value-label">Значение</label>
+                <input type="text" class="input" id="rule-value" placeholder="192.168.1.0/24" />
+              </div>
+              <div class="rule-hint" id="rule-hint"></div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-rule')">Отмена</button>
+              <button class="btn btn-primary" id="btn-save-rule">Добавить</button>
+            </div>
+          </div>
+        </div>
+        <!-- App picker dialog -->
+        <div class="modal hidden" id="modal-apps">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Выбрать приложение</h3>
+              <button class="modal-close" onclick="closeModal('modal-apps')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-row">
+                <input type="text" class="input" id="app-search" placeholder="🔍 Поиск по имени…" />
+              </div>
+              <div class="app-list" id="app-list">
+                <div class="app-list-empty">Загрузка списка процессов…</div>
+              </div>
+              <div class="rule-hint">
+                Правило создаётся по полному пути к .exe. Приложение должно быть
+                запущено, чтобы попасть в этот список.
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" onclick="closeModal('modal-apps')">Отмена</button>
+              <button class="btn btn-ghost" id="btn-apps-refresh">↻ Обновить</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Import / export dialog -->
+        <div class="modal hidden" id="modal-io">
+          <div class="modal-box">
+            <div class="modal-header">
+              <h3>Импорт / экспорт правил</h3>
+              <button class="modal-close" onclick="closeModal('modal-io')">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="form-row">
+                <label>Список правил <span class="form-hint">(тип:значение, по одному в строке)</span></label>
+                <textarea class="input io-textarea" id="io-text" rows="12"
+                          placeholder="domain_zone:example.com&#10;cidr:10.0.0.0/8&#10;app:C:\Program Files\App\app.exe"></textarea>
+              </div>
+              <label class="io-replace">
+                <input type="checkbox" id="io-replace" />
+                <span>Заменить текущий список, а не дополнить</span>
+              </label>
+            </div>
+            <div class="modal-footer">
+              <button class="btn btn-ghost" id="btn-io-copy">Копировать</button>
+              <button class="btn btn-primary" id="btn-io-import">Импортировать</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ LOGS PAGE ═════════════════════════════════════════════════════ -->
+      <section class="page" id="page-logs">
+        <div class="page-header">
+          <h2>Логи</h2>
+          <div class="page-actions">
+            <button class="btn btn-ghost" id="btn-clear-logs">Очистить</button>
+          </div>
+        </div>
+        <div class="log-container" id="log-container">
+          <div class="log-empty" id="log-empty">Логи пусты…</div>
+        </div>
+      </section>
+
+      <!-- ═══ SETTINGS PAGE ═════════════════════════════════════════════════ -->
+      <section class="page" id="page-settings">
+        <div class="page-header"><h2>Настройки</h2></div>
+
+        <div class="settings-section">
+          <div class="settings-title">Внешний вид</div>
+          <div class="settings-grid">
+            <div class="setting-row card">
+              <div>
+                <div class="setting-name">Тема</div>
+                <div class="setting-desc">Цветовая схема интерфейса</div>
+              </div>
+              <select class="input input-sm" id="setting-theme">
+                <option value="dark">🌙 Dark</option>
+                <option value="midnight">⬛ Midnight</option>
+                <option value="ocean">🌊 Ocean</option>
+                <option value="forest">🌲 Forest</option>
+                <option value="crimson">🔴 Crimson</option>
+                <option value="nord">❄️ Nord</option>
+                <option value="dracula">🧛 Dracula</option>
+                <option value="sunset">🌇 Sunset</option>
+                <option value="cyberpunk">🌆 Cyberpunk</option>
+                <option value="matrix">💚 Matrix</option>
+                <option value="coffee">☕ Coffee</option>
+                <option value="slate">🪨 Slate</option>
+                <option value="light">☀️ Light</option>
+                <option value="sakura">🌸 Sakura</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Поведение</div>
+          <div class="settings-grid">
+            <div class="setting-row card">
+              <div>
+                <div class="setting-name">Автопереподключение</div>
+                <div class="setting-desc">Восстанавливать туннель при разрыве</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="setting-autoreconnect" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="setting-row card">
+              <div>
+                <div class="setting-name">Свернуть в трей</div>
+                <div class="setting-desc">При закрытии окна скрыть в трей</div>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" id="setting-tray" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-title">Сеть</div>
+          <div class="settings-grid">
+            <div class="setting-row card">
+              <div>
+                <div class="setting-name">MTU</div>
+                <div class="setting-desc">Размер пакета (по умолчанию 1400)</div>
+              </div>
+              <input type="number" class="input input-sm" id="setting-mtu"
+                     min="576" max="1500" value="1400" />
+            </div>
+            <div class="setting-row card">
+              <div>
+                <div class="setting-name">DNS серверы</div>
+                <div class="setting-desc">Через запятую</div>
+              </div>
+              <input type="text" class="input input-sm" id="setting-dns"
+                     placeholder="8.8.8.8, 1.1.1.1" />
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <button class="btn btn-primary" id="btn-save-settings">Сохранить</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast notification -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

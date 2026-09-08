@@ -1,0 +1,20 @@
+/* ── Light theme ──────────────────────────────────────────────────────────── */
+:root {
+  --bg:            #f4f4f8;
+  --sidebar-bg:    #ebebf0;
+  --titlebar-bg:   #e4e4ea;
+  --surface:       #ffffff;
+  --surface-hover: #f0f0f6;
+  --surface-active:#e8e8f2;
+  --border:        rgba(0,0,0,0.10);
+  --text:          #18181e;
+  --text-dim:      #50506a;
+  --text-muted:    #9090a8;
+  --input-bg:      #f8f8fc;
+  --log-bg:        #f0f0f6;
+  --accent:        #e55a00;
+  --accent-hover:  #ff6b00;
+  --accent-dim:    rgba(229,90,0,0.10);
+  --accent-glow:   rgba(229,90,0,0.25);
+  --accent-glow2:  rgba(229,90,0,0.08);
+}

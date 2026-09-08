@@ -1,0 +1,20 @@
+/* ── Crimson theme (deep reds) ───────────────────────────────────────────── */
+:root {
+  --bg:            #140a0c;
+  --sidebar-bg:    #1a0d10;
+  --titlebar-bg:   #11080a;
+  --surface:       #201216;
+  --surface-hover: #2c1a1e;
+  --surface-active:#382228;
+  --border:        rgba(255,120,140,0.10);
+  --text:          #f0dce0;
+  --text-dim:      #b88a92;
+  --text-muted:    #6a4a52;
+  --input-bg:      #12080a;
+  --log-bg:        #0d0608;
+  --accent:        #ef4444;
+  --accent-hover:  #f87171;
+  --accent-dim:    rgba(239,68,68,0.12);
+  --accent-glow:   rgba(239,68,68,0.30);
+  --accent-glow2:  rgba(239,68,68,0.10);
+}
