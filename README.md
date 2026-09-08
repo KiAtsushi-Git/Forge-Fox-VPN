@@ -65,10 +65,6 @@ windows/   → полный исходный код Windows-клиента (Taur
 Это open-source проект — каждый клиент можно собрать из исходников
 (инструкции — в README внутри папок `android/` и `windows/`).
 
-Исходные коды также ведутся в GitLab:
-- Клиент Windows: [forgefoxvpn (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn)
-- Клиент Android: [forgefoxvpn-android (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn-android)
-- Панель Provider: [forgefoxvpn-provider (GitLab)](https://gitlab.com/KiAtsushi-Git/forgefoxvpn-provider) · [GitHub](https://github.com/KiAtsushi-Git/Forge-Fox-VPN-Self-Host-Provider)
 
 ## ☕ Помочь проекту
 
