@@ -42,7 +42,6 @@ cd ..
 
 - **Windows-клиент:** [Forge-Fox-VPN/windows](https://github.com/KiAtsushi-Git/Forge-Fox-VPN/tree/main/windows)
 - **Панель Provider (Self-Host):** [Forge-Fox-VPN-Self-Host-Provider](https://github.com/KiAtsushi-Git/Forge-Fox-VPN-Self-Host-Provider)
-- **Исходники (GitLab):** [forgefoxvpn-android](https://gitlab.com/KiAtsushi-Git/forgefoxvpn-android)
 
 ## ☕ Поддержать проект
 

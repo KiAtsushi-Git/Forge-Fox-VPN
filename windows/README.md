@@ -44,7 +44,7 @@ cargo install tauri-cli --version "^2"
 ## Разработка
 
 ```bash
-cd E:/GitLab/forgefoxvpn-ssh-main
+cd windows
 cargo tauri dev
 ```
 
