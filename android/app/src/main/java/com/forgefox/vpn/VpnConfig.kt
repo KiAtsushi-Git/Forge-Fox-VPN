@@ -18,8 +18,6 @@ object VpnConfig {
         val link = prefs.getString("selected_vless", "") ?: ""
         if (link.isEmpty() || !link.startsWith("ssh://")) return null
 
-        val rules = SplitRules.load(prefs).filter { it.enabled }
-
         val settings = JSONObject().apply {
             val savedMode = prefs.getString("proxy_mode", "tunnel") ?: "tunnel"
             put("mode", savedMode)
@@ -31,20 +29,30 @@ object VpnConfig {
             put("adblock_url", prefs.getString("adblock_url", defaultAdblock))
             put("split_enabled", prefs.getBoolean("split", false))
             put("split_mode", prefs.getInt("split_mode", 0))
-
-            // Split-tunnel rules. Apps are enforced by the Kotlin Builder;
-            // domains / zones are additionally watched by the Rust core, which
-            // reports addresses learned from DNS answers back to Kotlin.
+            val apps = prefs.getString("bypass_apps", "")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
             val appsArr = JSONArray()
-            SplitRules.appPackages(rules).forEach { appsArr.put(it) }
+            apps.forEach { appsArr.put(it) }
             put("bypass_apps", appsArr)
-            val domainsArr = JSONArray()
-            SplitRules.domains(rules).forEach { domainsArr.put(it) }
-            put("split_domains", domainsArr)
-            val zonesArr = JSONArray()
-            SplitRules.zones(rules).forEach { zonesArr.put(it) }
-            put("split_zones", zonesArr)
+            // Wildcard zones (*.ru) → DNS interception in the native core.
+            // Only meaningful in Proxy mode with split enabled.
+            val splitEnabled = prefs.getBoolean("split", false)
+            val splitMode = prefs.getInt("split_mode", 0)
+            if (splitEnabled && splitMode == 1) {
+                val zonesArr = JSONArray()
+                SplitTunnel.zoneEntries(prefs).forEach { zonesArr.put(it) }
+                put("dns_zones", zonesArr)
+                put("dns_server_ip", "198.18.0.2")
+                // Real resolver the native core forwards intercepted queries to
+                // (through a protected socket, outside the VPN).
+                put("dns_upstream", "8.8.8.8:53")
+            }
         }
+
+        // Site rules (domains / IPs / CIDRs) — enforced as routes on the
+        // VpnService.Builder; also passed to the core for logging/backup.
+        val sitesArr = JSONArray()
+        SplitTunnel.siteEntries(prefs).forEach { sitesArr.put(it) }
+        settings.put("bypass_domains", sitesArr)
 
         // Parse the ssh:// link (same formats as the desktop client)
         return try {

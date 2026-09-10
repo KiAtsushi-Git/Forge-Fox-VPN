@@ -15,42 +15,65 @@ import java.net.InetAddress
  *    are additive and there is no "exclude" — so we netsplit 0.0.0.0/0 around
  *    the excluded ranges; destinations not covered fall through to the
  *    physical network.
- *
- * Domain / domain-zone rules get two kinds of input:
- *  - a one-shot resolve at connect time (common cases work immediately), and
- *  - addresses the Rust core learns by watching DNS answers as they cross
- *    the tunnel (CDNs rotate addresses constantly) — handed over through
- *    [ForgeFoxVpnService.onDnsLearned], which re-establishes the TUN with
- *    the new routes.
  */
 object SplitTunnel {
 
     /** Inclusive IPv4 range, uint32 stored in a Long. */
     data class Range(val start: Long, val end: Long)
 
-    /** Site rules (everything except app rules) from prefs. */
-    fun siteRules(prefs: SharedPreferences): List<SplitRules.Rule> =
-        SplitRules.load(prefs)
-            .filter { it.enabled && it.type != SplitRules.Type.APP }
+    /** Load site entries (domains / IPs / CIDRs) from prefs, one per line. */
+    fun siteEntries(prefs: SharedPreferences): List<String> {
+        return siteEntriesFromRaw(prefs.getString("bypass_sites", "") ?: "")
+    }
+
+    /** Parse raw multi-line text into cleaned site entries. */
+    fun siteEntriesFromRaw(raw: String): List<String> {
+        return raw
+            .split("\n", ",", ";")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { normalizeEntry(it) }
+            .filter { it.isNotEmpty() }
+    }
 
     /**
-     * Resolve site rules to IPv4 ranges: literals directly, plus a one-shot
-     * seed of domain rules (see [seedDomainRanges]) and every address the
-     * Rust core learned from live DNS answers. Re-resolving here is
-     * deliberate: this must stay fast enough to run on every TUN rebuild.
+     * Wildcard zone suffixes from the site list — entries like "*.ru",
+     "*.io" or "*.youtube.com". Enforced via DNS interception + fake-IP
+     * in the native core (Proxy mode only). Returned without the "*."
+     * prefix: "ru", "io", "youtube.com".
      */
-    fun resolveRanges(
-        rules: List<SplitRules.Rule>,
-        learnedIps: Set<Long>,
-        seed: List<Range>,
-        log: (String) -> Unit
-    ): List<Range> {
+    fun zoneEntries(prefs: SharedPreferences): List<String> {
+        return siteEntries(prefs)
+            .filter { it.startsWith("*.") }
+            .map { it.removePrefix("*.") }
+            .filter { it.isNotEmpty() }
+            .distinct()
+    }
+
+    /** Non-wildcard entries (domains / IPs / CIDRs) for static route rules. */
+    fun exactEntries(prefs: SharedPreferences): List<String> {
+        return siteEntries(prefs).filter { !it.startsWith("*.") }
+    }
+
+    /**
+     * Entries that can never produce a rule: only empty strings after
+     * normalization. Wildcard zones (*.ru) are valid — they are enforced
+     * via DNS interception in Proxy mode.
+     */
+    fun invalidEntries(entries: List<String>): List<String> {
+        return entries.filter { normalizeEntry(it).isEmpty() }
+    }
+
+    /** Resolve entries to IPv4 ranges. Domains are resolved via DNS. */
+    fun resolveRanges(entries: List<String>, log: (String) -> Unit): List<Range> {
         val ranges = mutableListOf<Range>()
-        for (rule in rules) {
-            val entry = rule.normalized
+        for (rawEntry in entries) {
+            val entry = normalizeEntry(rawEntry)
+            if (entry.isEmpty()) continue
+            if (entry.startsWith("*.")) continue // zone — handled via DNS interception, not routes
             try {
-                when (rule.type) {
-                    SplitRules.Type.CIDR -> {
+                when {
+                    entry.contains('/') -> {
                         val parts = entry.split("/")
                         val prefix = parts[1].toIntOrNull()
                             ?: throw IllegalArgumentException("bad prefix")
@@ -58,78 +81,30 @@ object SplitTunnel {
                         val base = ipToInt(parts[0]) and maskOf(prefix)
                         ranges.add(Range(base, base + maskInv(prefix)))
                     }
-                    SplitRules.Type.IP -> ranges.add(Range(ipToInt(entry), ipToInt(entry)))
-                    else -> {} // domains: seeded once per connect + live DNS learning
-                }
-            } catch (e: Exception) {
-                log("Rule '${rule.type.wire}:$entry' skipped: ${e.message}")
-            }
-        }
-        ranges.addAll(seed)
-        // Addresses learned from DNS answers after connect.
-        for (ip in learnedIps) {
-            ranges.add(Range(ip, ip))
-        }
-        return mergeRanges(ranges)
-    }
-
-    /**
-     * One-shot parallel resolve of domain rules for route seeding, with a
-     * hard time budget. This must never run per-rebuild: DPI-blocked domains
-     * hang the system resolver for ~10s each, and a serial loop over ~20
-     * rules stalls VPN startup for minutes. Unresolved domains are simply
-     * skipped — the DNS observer in the Rust core learns those addresses
-     * once the tunnel is up.
-     */
-    fun seedDomainRanges(
-        rules: List<SplitRules.Rule>,
-        budgetMs: Long = 4000,
-        log: (String) -> Unit
-    ): List<Range> {
-        val domainRules = rules.filter {
-            it.enabled && (it.type == SplitRules.Type.DOMAIN || it.type == SplitRules.Type.DOMAIN_ZONE)
-        }
-        if (domainRules.isEmpty()) return emptyList()
-
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(8, domainRules.size))
-        try {
-            val futures = domainRules.map { rule ->
-                pool.submit<MutableList<Range>> {
-                    val out = mutableListOf<Range>()
-                    try {
-                        for (addr in InetAddress.getAllByName(rule.normalized)) {
-                            val b = addr.address
-                            if (b.size == 4) {
-                                val v = bytesToInt(b)
-                                out.add(Range(v, v))
+                    isIpv4(entry) -> {
+                        val ip = ipToInt(entry)
+                        ranges.add(Range(ip, ip))
+                    }
+                    else -> {
+                        // Domain: resolve to IPv4 addresses at VPN start
+                        // (same approach as the desktop client)
+                        var added = 0
+                        for (addr in InetAddress.getAllByName(entry)) {
+                            val bytes = addr.address
+                            if (bytes.size == 4) {
+                                val ip = bytesToInt(bytes)
+                                ranges.add(Range(ip, ip))
+                                added++
                             }
                         }
-                    } catch (_: Exception) {}
-                    out
+                        log("Site '$entry' resolved to $added IPv4 addresses")
+                    }
                 }
+            } catch (e: Exception) {
+                log("Site rule '$entry' skipped: ${e.message}")
             }
-            val deadline = System.currentTimeMillis() + budgetMs
-            val ranges = mutableListOf<Range>()
-            for ((i, f) in futures.withIndex()) {
-                val remaining = deadline - System.currentTimeMillis()
-                if (remaining <= 0) {
-                    f.cancel(true)
-                    log("Seed '${domainRules[i].normalized}': timed out (DNS observer will pick it up)")
-                    continue
-                }
-                try {
-                    val got = f.get(remaining, java.util.concurrent.TimeUnit.MILLISECONDS)
-                    log("Seed '${domainRules[i].normalized}': ${got.size} addresses")
-                    ranges.addAll(got)
-                } catch (e: Exception) {
-                    f.cancel(true)
-                    log("Seed '${domainRules[i].normalized}': unresolved (${e.javaClass.simpleName})")
-                }
-            }
-            return mergeRanges(ranges)
-        } finally {
-            pool.shutdownNow()
         }
+        return mergeRanges(ranges)
     }
 
     /** Proxy mode: route exactly these ranges through the VPN. */
@@ -216,6 +191,19 @@ object SplitTunnel {
 
     // ── IPv4 helpers ─────────────────────────────────────────────────────────
 
+    /**
+     * Trim an entry: lowercase, collapse redundant wildcards. A leading-dot
+     * zone (".ru") is normalized to the wildcard form ("*.ru"). A "*.x"
+     * wildcard keeps its prefix — it is a zone rule handled via DNS
+     * interception, not a static route.
+     */
+    private fun normalizeEntry(entry: String): String {
+        var s = entry.trim().lowercase()
+        if (s.isEmpty() || s == "*") return ""
+        if (s.startsWith('.')) return "*." + s.substring(1)
+        return s
+    }
+
     private fun isIpv4(s: String): Boolean {
         val parts = s.split(".")
         if (parts.size != 4) return false
@@ -232,9 +220,9 @@ object SplitTunnel {
 
     private fun bytesToInt(b: ByteArray): Long =
         ((b[0].toLong() and 0xFF) shl 24) or
-            ((b[1].toLong() and 0xFF) shl 16) or
-            ((b[2].toLong() and 0xFF) shl 8) or
-            (b[3].toLong() and 0xFF)
+        ((b[1].toLong() and 0xFF) shl 16) or
+        ((b[2].toLong() and 0xFF) shl 8) or
+        (b[3].toLong() and 0xFF)
 
     private fun intToInetAddress(v: Long): InetAddress =
         InetAddress.getByAddress(
