@@ -436,7 +436,14 @@ pub async fn fetch_subscription(url: String) -> Result<Vec<SshServer>, String> {
 #[tauri::command]
 pub async fn sh_install_host(server: SshServer) -> Result<String, String> {
     crate::vpn::ssh_vpn::vpn_log_ext(format!("Начало установки VPN Host на сервер {}...", server.host));
-    let base_install = include_str!("../../install.sh");
+    // Strip \r: git on Windows checks the file out with CRLF, and
+    // include_str! embeds it verbatim — every line then ends in a literal
+    // \r on the server ("$'\r': command not found", bash syntax errors).
+    let base_install: String = include_str!("../../install.sh")
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .collect::<Vec<_>>()
+        .join("\n");
     
     // We upload the script to /tmp/install.sh so ${BASH_SOURCE[0]} works
     let setup_script = format!(r#"
@@ -507,7 +514,12 @@ pub async fn sh_install_provider(server: SshServer, db_type: String, admin_user:
     // The installer ships with the app instead of being curl'd from GitHub at
     // install time: a blocked/unreachable raw.githubusercontent.com used to make
     // `curl -s | bash` a silent no-op that still reported success.
-    let provider_install = include_str!("../../provider_install.sh");
+    // Same CRLF strip as sh_install_host: git on Windows embeds \r otherwise.
+    let provider_install: String = include_str!("../../provider_install.sh")
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let setup_script = format!(
         r#"
