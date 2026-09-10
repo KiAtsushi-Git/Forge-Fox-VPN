@@ -689,6 +689,11 @@ pub async fn sh_add_user(server: SshServer, username: String, expiry: Option<Str
         bash_cmds.push(format!("echo {} > /etc/forgefox/limits/{}.gb", limit, username));
     }
 
+    // Verify the user actually exists afterwards: useradd can fail (e.g. the
+    // `forgefox` group is missing because Host install died midway) and the
+    // old code still reported success and copied a dead connection link.
+    bash_cmds.push(format!("id -u {0} >/dev/null 2>&1 || {{ echo 'USER_NOT_CREATED' >&2; exit 42; }}", username));
+
     let cmd = bash_cmds.join(" && ");
 
     crate::admin::run_remote_cmd(&server, &cmd).await
