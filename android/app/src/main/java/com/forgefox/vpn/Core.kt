@@ -18,6 +18,25 @@ object Core {
     @JvmStatic
     external fun stopSshVpn()
 
+    /**
+     * Hands a freshly established TUN fd to the running bridge without
+     * tearing down the SSH session (used when split-tunnel routes change
+     * because a DNS answer revealed new addresses). Blocks until the bridge
+     * stops using the previous fd; returns false if no bridge is running.
+     */
+    @JvmStatic
+    external fun swapTunFd(fd: Int): Boolean
+
+    /**
+     * Called from the Rust bridge thread when a DNS answer matching a
+     * domain / domain_zone rule revealed addresses the route table doesn't
+     * know yet. Payload: {"ips": ["1.2.3.4", ...], "query": "host"}.
+     */
+    @JvmStatic
+    fun onDnsLearned(json: String) {
+        ForgeFoxVpnService.instance?.onDnsLearned(json)
+    }
+
     @JvmStatic
     fun protectFd(fd: Int): Boolean {
         return try {

@@ -8,7 +8,10 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import org.json.JSONObject
 
 class ForgeFoxVpnService : VpnService() {
 
@@ -16,6 +19,22 @@ class ForgeFoxVpnService : VpnService() {
     private var trafficTimer: java.util.Timer? = null
     private var txBytes: Long = 0
     private var rxBytes: Long = 0
+
+    /** Local TUN address of the current session; reused across TUN re-establishes. */
+    private var clientIp: String = ""
+    private var serverIp: String = ""
+
+    /**
+     * IPv4 addresses (as uint32 in a Long) learned by the Rust core from DNS
+     * answers for domain / domain-zone rules. Kept across SSH reconnects so
+     * a dropped connection does not lose the learned routes; cleared when the
+     * user changes settings (rules may have changed).
+     */
+    private val learnedIps: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet())
+
+    /** Debounce for TUN rebuilds: DNS answers arrive in bursts. */
+    private val rebuildHandler = Handler(Looper.getMainLooper())
+    private var rebuildPending = false
 
     companion object {
         private const val TUN_MTU = 1400
@@ -44,7 +63,7 @@ class ForgeFoxVpnService : VpnService() {
                 if (!isRunning) return START_NOT_STICKY
                 addLog("Settings changed — restarting VPN...")
                 performStop()
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                Handler(Looper.getMainLooper()).postDelayed({
                     try {
                         val cfg = VpnConfig.build(this)
                         if (cfg != null) {
@@ -66,9 +85,9 @@ class ForgeFoxVpnService : VpnService() {
 
         val sshLink = intent?.getStringExtra("SSH_LINK")
         val sshConfigJson = intent?.getStringExtra("SSH_CONFIG_JSON") ?: ""
-        
+
         if (sshLink == null) return START_NOT_STICKY
-        
+
         instance = this
 
         try {
@@ -87,25 +106,29 @@ class ForgeFoxVpnService : VpnService() {
             try {
                 addLog("Starting VPN service...")
                 addLog("Starting SSH VPN for $sshLink...")
-                
+
                 val randomX = (10..250).random()
                 val randomY = (10..250).random()
-                val clientIp = "10.$randomX.$randomY.2"
-                val serverIp = "10.$randomX.$randomY.1"
-                
-                val fd = openTunCustom(clientIp)
+                clientIp = "10.$randomX.$randomY.2"
+                serverIp = "10.$randomX.$randomY.1"
+
+                // A fresh connect starts from a clean slate: rules may have
+                // changed since the last session.
+                learnedIps.clear()
+
+                val fd = openTunCustom()
                 if (fd == -1) {
                     addLog("Failed to open TUN for SSH VPN")
                     throw Exception("Failed to open TUN for SSH")
                 }
                 addLog("TUN opened successfully (fd=$fd, client=$clientIp, server=$serverIp)")
-                
+
                 isRunning = true
                 val myGen = ++generation
                 updateNotification("Подключено ✓", true)
                 startTrafficTimer()
 
-                val json = org.json.JSONObject(sshConfigJson)
+                val json = JSONObject(sshConfigJson)
                 json.put("server_tun_ip", serverIp)
                 // The native core passes this to the server-side bridge
                 // (forgefox-bridge / python fallback) so both TUN ends agree.
@@ -114,7 +137,10 @@ class ForgeFoxVpnService : VpnService() {
 
                 while (isRunning && generation == myGen) {
                     addLog("Starting SSH VPN core (blocking)...")
-                    Core.startSshVpn(fd, finalSettingsJson)
+                    // tunFd, not the fd captured at start: route rebuilds swap
+                    // it while the bridge is running, and a reconnect after an
+                    // SSH drop must pick up the current one.
+                    Core.startSshVpn(tunFd, finalSettingsJson)
 
                     if (!isRunning || generation != myGen) {
                         addLog("SSH VPN core finished and VPN is manually stopped.")
@@ -128,7 +154,7 @@ class ForgeFoxVpnService : VpnService() {
                         }
                     }
                 }
-                
+
                 isRunning = false
                 updateNotification("Отключено", false)
 
@@ -141,6 +167,79 @@ class ForgeFoxVpnService : VpnService() {
         }.start()
 
         return START_STICKY
+    }
+
+    /**
+     * The Rust core saw a DNS answer for a domain / domain-zone rule with
+     * addresses not yet in the route table. Coalesce bursts, then re-establish
+     * the TUN with the new routes and hand the fresh fd to the running bridge
+     * — the SSH session survives the swap.
+     */
+    fun onDnsLearned(json: String) {
+        val ips = try {
+            val obj = JSONObject(json)
+            obj.optJSONArray("ips")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optString(it) }
+            } ?: emptyList()
+        } catch (e: Exception) {
+            emptyList<String>()
+        }
+        var added = 0
+        for (ip in ips) {
+            try {
+                val bytes = java.net.InetAddress.getByName(ip).address
+                if (bytes.size == 4) {
+                    val v = ((bytes[0].toLong() and 0xFF) shl 24) or
+                        ((bytes[1].toLong() and 0xFF) shl 16) or
+                        ((bytes[2].toLong() and 0xFF) shl 8) or
+                        (bytes[3].toLong() and 0xFF)
+                    if (learnedIps.add(v)) added++
+                }
+            } catch (_: Exception) {}
+        }
+        if (added == 0 || !isRunning) return
+
+        addLog("DNS learned $added new addresses — rebuilding routes")
+        synchronized(this) {
+            if (rebuildPending) return
+            rebuildPending = true
+        }
+        rebuildHandler.postDelayed({
+            synchronized(this) { rebuildPending = false }
+            rebuildTun()
+        }, 500)
+    }
+
+    /**
+     * Establish a new TUN with the current rules + learned addresses and swap
+     * it into the running bridge. Called on the main thread after the
+     * debounce window; the blocking fd handover runs on a worker thread.
+     */
+    private fun rebuildTun() {
+        if (!isRunning) return
+        val myGen = generation
+        Thread {
+            if (!isRunning || generation != myGen) return@Thread
+            val oldFd = tunFd
+            val newFd = openTunCustom()
+            if (newFd == -1) {
+                addLog("Route rebuild failed: could not establish new TUN")
+                return@Thread
+            }
+            // Hand the fd to the bridge; it acks once the old fd is unused.
+            if (!Core.swapTunFd(newFd)) {
+                addLog("Route rebuild failed: bridge not running")
+                try { ParcelFileDescriptor.adoptFd(newFd).close() } catch (_: Exception) {}
+                return@Thread
+            }
+            tunFd = newFd
+            if (oldFd != -1 && oldFd != newFd) {
+                try {
+                    ParcelFileDescriptor.adoptFd(oldFd).close()
+                } catch (_: Exception) {}
+            }
+            addLog("Routes rebuilt (${learnedIps.size} learned addresses)")
+        }.start()
     }
 
     private fun createNotificationChannel() {
@@ -236,6 +335,7 @@ class ForgeFoxVpnService : VpnService() {
         isRunning = false
         trafficTimer?.cancel()
         trafficTimer = null
+        rebuildHandler.removeCallbacksAndMessages(null)
 
         Thread {
             try {
@@ -278,13 +378,14 @@ class ForgeFoxVpnService : VpnService() {
         addLog("onDestroy()")
         isRunning = false
         trafficTimer?.cancel()
+        rebuildHandler.removeCallbacksAndMessages(null)
         try { Core.stopSshVpn() } catch (_: Exception) {}
         closeTunFd()
         instance = null
         super.onDestroy()
     }
 
-    private fun openTunCustom(clientIp: String): Int {
+    private fun openTunCustom(): Int {
         try {
             val builder = Builder()
             builder.addAddress(clientIp, 24)
@@ -294,25 +395,29 @@ class ForgeFoxVpnService : VpnService() {
             try { builder.addDnsServer("2001:4860:4860::8888") } catch (e: Exception) {}
             builder.setMtu(TUN_MTU)
             builder.setSession("SSH VPN")
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
                 builder.setUnderlyingNetworks(null)
             }
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false)
             }
-            
+
             val prefs = getSharedPreferences("ForgeFoxSettings", android.content.Context.MODE_PRIVATE)
             val splitEnabled = prefs.getBoolean("split", false)
             val splitMode = prefs.getInt("split_mode", 0) // 0: bypass, 1: proxy
-            
-            if (splitEnabled) {
-                // Apps
-                val apps = prefs.getString("bypass_apps", "")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
 
-                // Sites (domains / IPs / CIDRs) — resolved to IPv4 ranges
-                val sites = SplitTunnel.resolveRanges(SplitTunnel.siteEntries(prefs)) { addLog(it) }
+            if (splitEnabled) {
+                val rules = SplitRules.load(prefs).filter { it.enabled }
+                val apps = SplitRules.appPackages(rules)
+                val siteRules = rules.filter { it.type != SplitRules.Type.APP }
+                val hasDomainRules = rules.any {
+                    it.type == SplitRules.Type.DOMAIN || it.type == SplitRules.Type.DOMAIN_ZONE
+                }
+
+                // Sites (ip / cidr / domain / domain_zone) — resolved to IPv4 ranges
+                val sites = SplitTunnel.resolveRanges(siteRules, learnedIps) { addLog(it) }
 
                 if (splitMode == 1) {
                     // Proxy mode: Route ONLY the selected apps and/or sites
@@ -329,6 +434,16 @@ class ForgeFoxVpnService : VpnService() {
                     if (addedApps > 0) builder.addRoute("0.0.0.0", 0)
                     // Selected sites get routed through the VPN
                     SplitTunnel.addSiteRoutes(builder, sites)
+
+                    // In Proxy mode nothing but the rule list enters the tunnel,
+                    // so DNS answers would never cross it and domain/zone rules
+                    // would never learn anything. Route the resolvers inside.
+                    if (hasDomainRules && addedApps == 0) {
+                        for (dns in listOf("8.8.8.8", "1.1.1.1")) {
+                            try { builder.addRoute(dns, 32) } catch (_: Exception) {}
+                        }
+                        addLog("Split (Proxy): DNS routed through VPN to track domain rules.")
+                    }
 
                     if (addedApps == 0 && sites.isEmpty()) {
                         addLog("Proxy mode with an empty list - no traffic will be routed!")
@@ -360,7 +475,7 @@ class ForgeFoxVpnService : VpnService() {
             } else {
                 builder.addRoute("0.0.0.0", 0)
             }
-            
+
             val pfd = builder.establish()
             if (pfd != null) {
                 tunFd = pfd.detachFd()

@@ -19,138 +19,191 @@
         android:paddingTop="20dp"
         android:paddingBottom="16dp"/>
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:paddingHorizontal="16dp">
+        android:fillViewport="true"
+        android:scrollbars="none">
 
-        <!-- Split tunnel card -->
         <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:minHeight="64dp"
-            android:background="@drawable/card_glass"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:padding="16dp"
-            android:layout_marginBottom="10dp">
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Раздельное туннелирование"
-                    android:textColor="#FFFFFF"
-                    android:textSize="15sp"/>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Правила для приложений и сайтов"
-                    android:textColor="#71717A"
-                    android:textSize="12sp"/>
-            </LinearLayout>
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/switchSplit"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:theme="@style/SwitchTheme"/>
-        </LinearLayout>
-
-        <!-- Режим правил -->
-        <LinearLayout
-            android:id="@+id/btnSplitMode"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:minHeight="64dp"
-            android:background="@drawable/card_glass"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:clickable="true"
-            android:focusable="true"
-            android:padding="16dp"
-            android:layout_marginBottom="10dp">
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Режим правил"
-                    android:textColor="#FFFFFF"
-                    android:textSize="15sp"/>
-                <TextView
-                    android:id="@+id/lblSplitMode"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="В VPN всё, кроме списка"
-                    android:textColor="#FF6B00"
-                    android:textSize="12sp"/>
-            </LinearLayout>
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="›"
-                android:textColor="#52525B"
-                android:textSize="22sp"/>
-        </LinearLayout>
-        
-        <!-- Сайты для правил -->
-        <LinearLayout
-            android:id="@+id/btnSites"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:minHeight="64dp"
-            android:background="@drawable/card_glass"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:clickable="true"
-            android:focusable="true"
-            android:padding="16dp"
-            android:layout_marginBottom="10dp">
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Сайты для правил"
-                    android:textColor="#FFFFFF"
-                    android:textSize="15sp"/>
-                <TextView
-                    android:id="@+id/lblSites"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Не задано"
-                    android:textColor="#FF6B00"
-                    android:textSize="12sp"/>
-            </LinearLayout>
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="›"
-                android:textColor="#52525B"
-                android:textSize="22sp"/>
-        </LinearLayout>
-
-        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Выбери приложения для правила"
-            android:textColor="#71717A"
-            android:textSize="13sp"
-            android:paddingBottom="12dp"/>
-            
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvApps"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scrollbars="none"/>
+            android:orientation="vertical"
+            android:paddingHorizontal="16dp"
+            android:paddingBottom="24dp">
 
-    </LinearLayout>
+            <!-- Split tunnel card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="64dp"
+                android:background="@drawable/card_glass"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="16dp"
+                android:layout_marginBottom="10dp">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Раздельное туннелирование"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp"/>
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Правила для приложений и сайтов"
+                        android:textColor="#71717A"
+                        android:textSize="12sp"/>
+                </LinearLayout>
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/switchSplit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:theme="@style/SwitchTheme"/>
+            </LinearLayout>
+
+            <!-- Режим правил -->
+            <LinearLayout
+                android:id="@+id/btnSplitMode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:minHeight="64dp"
+                android:background="@drawable/card_glass"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:clickable="true"
+                android:focusable="true"
+                android:padding="16dp"
+                android:layout_marginBottom="10dp">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Режим правил"
+                        android:textColor="#FFFFFF"
+                        android:textSize="15sp"/>
+                    <TextView
+                        android:id="@+id/lblSplitMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Bypass — всё через VPN, кроме списка"
+                        android:textColor="#FF6B00"
+                        android:textSize="12sp"/>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="›"
+                    android:textColor="#52525B"
+                    android:textSize="22sp"/>
+            </LinearLayout>
+
+            <!-- Правила: заголовок + действия -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingTop="6dp"
+                android:paddingBottom="10dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Правила"
+                    android:textColor="#FFFFFF"
+                    android:textSize="15sp"
+                    android:fontFamily="sans-serif-medium"/>
+
+                <TextView
+                    android:id="@+id/btnExport"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Экспорт"
+                    android:textColor="#FF6B00"
+                    android:textSize="13sp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="6dp"
+                    android:background="@drawable/chip_bg"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <TextView
+                    android:id="@+id/btnImport"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Импорт"
+                    android:textColor="#FF6B00"
+                    android:textSize="13sp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="6dp"
+                    android:background="@drawable/chip_bg"
+                    android:layout_marginStart="8dp"
+                    android:clickable="true"
+                    android:focusable="true"/>
+
+                <TextView
+                    android:id="@+id/btnAddRule"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="+ Добавить"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="6dp"
+                    android:background="@drawable/btn_orange"
+                    android:layout_marginStart="8dp"
+                    android:clickable="true"
+                    android:focusable="true"/>
+            </LinearLayout>
+
+            <!-- Фильтры по типу -->
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:scrollbars="none"
+                android:layout_marginBottom="10dp">
+                <LinearLayout
+                    android:id="@+id/filterChips"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+                    <TextView android:id="@+id/chipAll" style="@style/FilterChip" android:text="Все"/>
+                    <TextView android:id="@+id/chipIp" style="@style/FilterChip" android:text="IP"/>
+                    <TextView android:id="@+id/chipCidr" style="@style/FilterChip" android:text="Подсети"/>
+                    <TextView android:id="@+id/chipDomain" style="@style/FilterChip" android:text="Домены"/>
+                    <TextView android:id="@+id/chipZone" style="@style/FilterChip" android:text="Зоны"/>
+                    <TextView android:id="@+id/chipApp" style="@style/FilterChip" android:text="Приложения"/>
+                </LinearLayout>
+            </HorizontalScrollView>
+
+            <!-- Список правил -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvRules"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:nestedScrollingEnabled="false"
+                android:overScrollMode="never"/>
+
+            <TextView
+                android:id="@+id/lblNoRules"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="📋 Правила не добавлены"
+                android:textColor="#52525B"
+                android:textSize="14sp"
+                android:gravity="center"
+                android:paddingVertical="32dp"/>
+
+        </LinearLayout>
+    </ScrollView>
 
 </LinearLayout>

@@ -18,6 +18,8 @@ object VpnConfig {
         val link = prefs.getString("selected_vless", "") ?: ""
         if (link.isEmpty() || !link.startsWith("ssh://")) return null
 
+        val rules = SplitRules.load(prefs).filter { it.enabled }
+
         val settings = JSONObject().apply {
             val savedMode = prefs.getString("proxy_mode", "tunnel") ?: "tunnel"
             put("mode", savedMode)
@@ -29,17 +31,20 @@ object VpnConfig {
             put("adblock_url", prefs.getString("adblock_url", defaultAdblock))
             put("split_enabled", prefs.getBoolean("split", false))
             put("split_mode", prefs.getInt("split_mode", 0))
-            val apps = prefs.getString("bypass_apps", "")?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
-            val appsArr = JSONArray()
-            apps.forEach { appsArr.put(it) }
-            put("bypass_apps", appsArr)
-        }
 
-        // Load exclusions from new list format
-        val domainsList = prefs.getString("domains_list", "") ?: ""
-        val domainsArr = JSONArray()
-        domainsList.split("\n").filter { it.isNotEmpty() }.forEach { domainsArr.put(it) }
-        settings.put("bypass_domains", domainsArr)
+            // Split-tunnel rules. Apps are enforced by the Kotlin Builder;
+            // domains / zones are additionally watched by the Rust core, which
+            // reports addresses learned from DNS answers back to Kotlin.
+            val appsArr = JSONArray()
+            SplitRules.appPackages(rules).forEach { appsArr.put(it) }
+            put("bypass_apps", appsArr)
+            val domainsArr = JSONArray()
+            SplitRules.domains(rules).forEach { domainsArr.put(it) }
+            put("split_domains", domainsArr)
+            val zonesArr = JSONArray()
+            SplitRules.zones(rules).forEach { zonesArr.put(it) }
+            put("split_zones", zonesArr)
+        }
 
         // Parse the ssh:// link (same formats as the desktop client)
         return try {
