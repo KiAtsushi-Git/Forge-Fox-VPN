@@ -13,12 +13,15 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use async_trait::async_trait;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::sync::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::dns;
+use crate::flow_rules::{self, FlowKey, FlowTable, RangeSet, Route, PROTO_TCP, PROTO_UDP};
+use crate::tcp_gen;
 
 static CANCEL_TX: Mutex<Option<tokio::sync::broadcast::Sender<()>>> = Mutex::new(None);
 
@@ -182,6 +185,80 @@ fn protect_fd(fd: RawFd) -> bool {
     env.call_static_method(class, "protectFd", "(I)Z", &[jni::objects::JValue::Int(fd)])
         .map(|r| r.z().unwrap_or(false))
         .unwrap_or(false)
+}
+
+/// Call a static method on the cached Core class, returning a jint.
+fn jni_call_static_int(name: &str, sig: &str, args: &[jni::objects::JValue]) -> Option<i32> {
+    let vm_lock = JAVA_VM.lock().ok()?;
+    let class_lock = CORE_CLASS.lock().ok()?;
+    let vm = vm_lock.as_ref()?;
+    let class_ref = class_lock.as_ref()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    // Safety: the raw pointer is a JNI global reference owned by `class_ref`,
+    // which stays alive for the duration of the call.
+    let class = unsafe { JClass::from_raw(class_ref.as_raw() as _) };
+    env.call_static_method(class, name, sig, args)
+        .ok()?
+        .i()
+        .ok()
+}
+
+/// Ask Java (ConnectivityManager.getConnectionOwnerUid, API 29+) which uid
+/// owns the connection (proto, src, sport) → (dst, dport). -1 = unknown.
+fn jni_get_connection_owner(proto: u8, src: u32, sport: u16, dst: u32, dport: u16) -> Option<i32> {
+    jni_call_static_int(
+        "getConnectionOwner",
+        "(IIIII)I",
+        &[
+            jni::objects::JValue::Int(proto as i32),
+            jni::objects::JValue::Int(src as i32),
+            jni::objects::JValue::Int(sport as i32),
+            jni::objects::JValue::Int(dst as i32),
+            jni::objects::JValue::Int(dport as i32),
+        ],
+    )
+}
+
+/// True when the uid belongs to one of the apps selected for the VPN
+/// (Proxy split mode). False for everyone else, including ourselves.
+fn jni_is_app_selected(uid: i32) -> bool {
+    let vm_lock = match JAVA_VM.lock() {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let class_lock = match CORE_CLASS.lock() {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    let (Some(vm), Some(class_ref)) = (vm_lock.as_ref(), class_lock.as_ref()) else {
+        return false;
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(guard) => guard,
+        Err(_) => return false,
+    };
+    // Safety: the raw pointer is a JNI global reference owned by `class_ref`,
+    // which stays alive for the duration of the call.
+    let class = unsafe { JClass::from_raw(class_ref.as_raw() as _) };
+    env.call_static_method(class, "isAppSelected", "(I)Z", &[jni::objects::JValue::Int(uid)])
+        .map(|r| r.z().unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// Decide whether a new flow belongs to a selected app. Retries briefly:
+/// right after a SYN/first-packet the kernel socket may not be visible to
+/// the connectivity service yet. `None` = could not determine the owner —
+/// callers treat that as "tunnel" (safe: traffic still flows).
+async fn lookup_owner_selected(proto: u8, src: u32, sport: u16, dst: u32, dport: u16) -> Option<bool> {
+    for _ in 0..3 {
+        if let Some(uid) = jni_get_connection_owner(proto, src, sport, dst, dport) {
+            if uid >= 0 {
+                return Some(jni_is_app_selected(uid));
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    None
 }
 
 /// Recompute the IPv4 header checksum in place (first 20 header bytes).
@@ -500,6 +577,618 @@ async fn handle_dns_query(
     let _ = tun_tx.send(pkt).await;
 }
 
+// ── Union mode: per-flow split tunneling (selected apps + selected sites) ────
+//
+// When Proxy split mode has BOTH apps and sites/zones selected, the TUN is
+// opened with 0.0.0.0/0 and no app filter (see ForgeFoxVpnService), so every
+// app's traffic enters the TUN. This engine routes each flow:
+//   dst inside a selected site range  → SSH tunnel;
+//   dst is a fake zone IP             → SSH tunnel (handled by DnsEngine NAT);
+//   connection owner is a selected app→ SSH tunnel;
+//   otherwise                         → bypass: re-originate the flow through
+//                                       a protected socket outside the VPN.
+
+/// Shared per-run union state: cached flow decisions + channels to the
+/// per-flow bypass tasks.
+struct UnionInner {
+    table: FlowTable,
+    channels: HashMap<FlowKey, mpsc::Sender<Vec<u8>>>,
+}
+
+struct Union {
+    /// Selected site ranges (proxy_ranges in the settings JSON).
+    ranges: RangeSet,
+    state: tokio::sync::Mutex<UnionInner>,
+}
+
+impl Union {
+    fn from_settings(settings: &Value) -> Option<Arc<Self>> {
+        if !settings["union_mode"].as_bool().unwrap_or(false) {
+            return None;
+        }
+        let mut pairs: Vec<(u32, u32)> = Vec::new();
+        if let Some(arr) = settings["proxy_ranges"].as_array() {
+            for pair in arr {
+                let Some(pair) = pair.as_array() else { continue };
+                if pair.len() != 2 {
+                    continue;
+                }
+                let (Ok(a), Ok(b)) = (
+                    pair[0].as_str().unwrap_or("").parse::<std::net::Ipv4Addr>(),
+                    pair[1].as_str().unwrap_or("").parse::<std::net::Ipv4Addr>(),
+                ) else {
+                    continue;
+                };
+                pairs.push((u32::from(a), u32::from(b)));
+            }
+        }
+        log_d!(
+            "Union mode ON: {} site ranges, flows decided per-connection",
+            RangeSet::from_pairs(pairs.clone()).len()
+        );
+        Some(Arc::new(Self {
+            ranges: RangeSet::from_pairs(pairs),
+            state: tokio::sync::Mutex::new(UnionInner {
+                table: FlowTable::new(8192),
+                channels: HashMap::new(),
+            }),
+        }))
+    }
+
+    /// Drop a finished flow (called by bypass tasks on teardown).
+    async fn remove_flow(&self, key: &FlowKey) {
+        let mut st = self.state.lock().await;
+        st.table.remove(key);
+        st.channels.remove(key);
+    }
+}
+
+/// UDP payload of an IPv4 packet (None if truncated).
+fn udp_payload(pkt: &[u8]) -> Option<&[u8]> {
+    if pkt.len() < 28 || pkt[0] >> 4 != 4 {
+        return None;
+    }
+    let ihl = ((pkt[0] & 0x0F) as usize) * 4;
+    if pkt.len() < ihl + 8 {
+        return None;
+    }
+    Some(&pkt[ihl + 8..])
+}
+
+/// Route one outbound TUN packet. Returns true when it should be forwarded
+/// through the SSH tunnel; false when the packet was consumed (bypassed,
+/// dropped or handed to a per-flow task). Must run AFTER DnsEngine so DNS
+/// interception and fake→real NAT take precedence. `zone_dst` tells whether
+/// the packet's ORIGINAL destination (before the NAT) was a fake zone IP:
+/// zone rules apply to every app, so such flows always tunnel.
+async fn union_dispatch(
+    u: &Arc<Union>,
+    pkt: &[u8],
+    tun_tx: mpsc::Sender<Vec<u8>>,
+    zone_dst: bool,
+) -> bool {
+    // Fragments and other headerless packets cannot be attributed — the
+    // first fragment of the same flow was already routed, so forward
+    // (existing pre-union behavior).
+    let Some(key) = flow_rules::flow_key_of(pkt) else {
+        return true;
+    };
+    let (proto, src, sport, dst, dport) = key;
+
+    // Follow a cached decision.
+    {
+        let st = u.state.lock().await;
+        match st.table.route_for(&key) {
+            Some(Route::Tunnel) => return true,
+            Some(Route::Bypass) => {
+                if let Some(ch) = st.channels.get(&key) {
+                    // TCP tasks want whole packets, UDP tasks want payloads.
+                    let data: Vec<u8> = if proto == PROTO_UDP {
+                        match udp_payload(pkt) {
+                            Some(p) => p.to_vec(),
+                            None => return false,
+                        }
+                    } else {
+                        pkt.to_vec()
+                    };
+                    if ch.try_send(data).is_ok() {
+                        return false;
+                    }
+                    // Channel full: the flow's task is stuck or gone. For a
+                    // mid-connection TCP packet there is nothing sane to do;
+                    // for a SYN we can rebuild the connection below.
+                }
+                if proto == PROTO_TCP {
+                    match tcp_gen::parse_tcp(pkt) {
+                        Some(seg) if seg.flags & tcp_gen::SYN != 0 => { /* rebuild */ }
+                        _ => return false, // stray post-teardown packet → drop
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    // New flow: site ranges and zone fake IPs win for every app.
+    if zone_dst || u.ranges.contains(dst) {
+        u.state.lock().await.table.set(key, Route::Tunnel);
+        return true;
+    }
+
+    // Ask Java who owns the connection; selected apps get the tunnel.
+    let selected = match lookup_owner_selected(proto, src, sport, dst, dport).await {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            // Owner unknown — tunnel (traffic still flows, just not split).
+            u.state.lock().await.table.set(key, Route::Tunnel);
+            return true;
+        }
+    };
+    if selected {
+        log_d!(
+            "TUNNEL flow (selected app): {}:{} → {}",
+            std::net::Ipv4Addr::from(src),
+            sport,
+            std::net::Ipv4Addr::from(dst)
+        );
+        u.state.lock().await.table.set(key, Route::Tunnel);
+        return true;
+    }
+
+    // Bypass.
+    match proto {
+        PROTO_TCP => {
+            let Some(seg) = tcp_gen::parse_tcp(pkt) else { return true };
+            if seg.flags & tcp_gen::SYN == 0 {
+                return false; // mid-connection packet with no state → drop
+            }
+            let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
+            {
+                let mut st = u.state.lock().await;
+                st.table.set(key, Route::Bypass);
+                st.channels.insert(key, tx);
+            }
+            tokio::spawn(tcp_bypass_conn(
+                Arc::clone(u),
+                key,
+                pkt.to_vec(),
+                rx,
+                tun_tx,
+            ));
+            false
+        }
+        PROTO_UDP => {
+            let Some(payload) = udp_payload(pkt) else { return false };
+            let first = payload.to_vec();
+            let (tx, rx) = mpsc::channel::<Vec<u8>>(64);
+            {
+                let mut st = u.state.lock().await;
+                st.table.set(key, Route::Bypass);
+                st.channels.insert(key, tx);
+            }
+            tokio::spawn(udp_bypass_flow(Arc::clone(u), key, rx, tun_tx));
+            // Deliver the first payload through the channel so the task owns
+            // ordering from the start.
+            if let Some(ch) = u.state.lock().await.channels.get(&key) {
+                let _ = ch.try_send(first);
+            }
+            false
+        }
+        _ => true,
+    }
+}
+
+/// Create a protected (VPN-exempt) UDP socket ready for tokio.
+fn protected_udp_socket() -> Option<tokio::net::UdpSocket> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .ok()?;
+    if !protect_fd(sock.as_raw_fd()) {
+        log_e!("protect_fd failed for bypass UDP socket");
+    }
+    sock.set_nonblocking(true).ok()?;
+    let std_sock: std::net::UdpSocket = sock.into();
+    tokio::net::UdpSocket::from_std(std_sock).ok()
+}
+
+/// Connect a protected (VPN-exempt) TCP socket to the real destination.
+/// The socket is protected BEFORE connecting so the SYN never enters the
+/// TUN; the blocking connect runs on a worker thread.
+async fn protected_tcp_connect(srv_ip: u32, srv_port: u16) -> Option<tokio::net::TcpStream> {
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .ok()?;
+    if !protect_fd(sock.as_raw_fd()) {
+        log_e!("protect_fd failed for bypass TCP socket");
+    }
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::from(srv_ip), srv_port));
+    let std_sock: std::net::TcpStream = tokio::task::spawn_blocking(move || {
+        let addr = socket2::SockAddr::from(addr);
+        sock.connect_timeout(&addr, Duration::from_secs(10)).ok()?;
+        sock.set_nonblocking(true).ok()?;
+        let s: std::net::TcpStream = sock.into();
+        Some(s)
+    })
+    .await
+    .ok()??;
+    match tokio::net::TcpStream::from_std(std_sock) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            log_d!(
+                "bypass TCP connect {}:{} failed: {}",
+                std::net::Ipv4Addr::from(srv_ip),
+                srv_port,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// One bypassed UDP flow: relay payloads between the app (via TUN, through
+/// the flow channel) and the real destination through a protected socket.
+/// The app keeps talking to the original dst address: inbound datagrams are
+/// re-crafted as if they came from it.
+async fn udp_bypass_flow(
+    u: Arc<Union>,
+    key: FlowKey,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    tun_tx: mpsc::Sender<Vec<u8>>,
+) {
+    let (_proto, cli_ip, cli_port, srv_ip, srv_port) = key;
+    let Some(sock) = protected_udp_socket() else {
+        u.remove_flow(&key).await;
+        return;
+    };
+    let dst = std::net::SocketAddr::from((std::net::Ipv4Addr::from(srv_ip), srv_port));
+    let mut buf = vec![0u8; 65535];
+    let mut idle = std::time::Instant::now();
+
+    loop {
+        let deadline = tokio::time::Instant::from_std(idle + Duration::from_secs(60));
+        tokio::select! {
+            maybe = rx.recv() => {
+                match maybe {
+                    None => break,
+                    Some(payload) => {
+                        let _ = sock.send_to(&payload, dst).await;
+                        idle = std::time::Instant::now();
+                    }
+                }
+            }
+            r = sock.recv_from(&mut buf) => {
+                match r {
+                    Ok((n, peer)) => {
+                        if peer.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::from(srv_ip)) {
+                            let pkt = build_udp_packet(srv_ip, cli_ip, srv_port, cli_port, &buf[..n]);
+                            if tun_tx.send(pkt).await.is_err() {
+                                break;
+                            }
+                        }
+                        idle = std::time::Instant::now();
+                    }
+                    Err(_) => break,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                log_d!("bypass UDP flow idle-expired: {} → {}", cli_port, dst);
+                break;
+            }
+        }
+    }
+    u.remove_flow(&key).await;
+}
+
+/// Move bytes from the pending server→client buffer into TCP segments,
+/// respecting the client's advertised window. Returns the crafted packets.
+#[allow(clippy::too_many_arguments)]
+fn take_data_segments(
+    pending: &mut VecDeque<u8>,
+    retrans: &mut VecDeque<(u32, Vec<u8>)>,
+    our_seq: &mut u32,
+    ack: u32,
+    in_flight: u32,
+    window: u32,
+    mss: usize,
+    srv_ip: u32,
+    srv_port: u16,
+    cli_ip: u32,
+    cli_port: u16,
+) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut usable = window.saturating_sub(in_flight);
+    while !pending.is_empty() && usable > 0 {
+        let n = pending.len().min(usable as usize).min(mss);
+        if n == 0 {
+            break;
+        }
+        let payload: Vec<u8> = pending.drain(..n).collect();
+        let pkt = tcp_gen::build_tcp_packet(
+            srv_ip,
+            cli_ip,
+            srv_port,
+            cli_port,
+            *our_seq,
+            ack,
+            tcp_gen::PSH | tcp_gen::ACK,
+            0xFFFF,
+            &payload,
+        );
+        retrans.push_back((*our_seq, payload));
+        *our_seq = our_seq.wrapping_add(n as u32);
+        usable = usable.saturating_sub(n as u32);
+        out.push(pkt);
+    }
+    out
+}
+
+/// A bypassed TCP connection. The core terminates TCP with the app (acting
+/// as the remote endpoint) and relays the stream through a protected socket
+/// to the real destination, outside the VPN.
+async fn tcp_bypass_conn(
+    u: Arc<Union>,
+    key: FlowKey,
+    syn: Vec<u8>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    tun_tx: mpsc::Sender<Vec<u8>>,
+) {
+    let (_proto, cli_ip, cli_port, srv_ip, srv_port) = key;
+
+    let Some(seg) = tcp_gen::parse_tcp(&syn) else {
+        u.remove_flow(&key).await;
+        return;
+    };
+    let cli_isn = seg.seq;
+    let their_wscale = seg.wscale.unwrap_or(0);
+    let mss = seg.mss.unwrap_or(536).min(tcp_gen::OUR_MSS) as usize;
+    let our_isn: u32 = rand::random();
+
+    // Connection state (app side).
+    let mut expected = cli_isn.wrapping_add(1); // next byte we expect from the app
+    let mut our_seq = our_isn.wrapping_add(1); // next byte we will send
+    let mut snd_una = our_isn.wrapping_add(1); // oldest unacked byte of ours
+    let mut their_window: u32 = (seg.window as u32) << their_wscale;
+    let mut established = false;
+    let mut client_fin = false;
+    let mut server_eof = false; // real server closed its write side
+    let mut fin_sent = false;
+
+    // Server→client data path.
+    let mut pending: VecDeque<u8> = VecDeque::new();
+    let mut retrans: VecDeque<(u32, Vec<u8>)> = VecDeque::new();
+    let mut rto = Duration::from_millis(1000);
+    let mut last_xmit = std::time::Instant::now();
+    let mut retries = 0u32;
+    let mut last_activity = std::time::Instant::now();
+
+    // Protected connection to the real destination.
+    let stream = protected_tcp_connect(srv_ip, srv_port).await;
+    let (mut s_read, mut s_write) = match stream {
+        Some(s) => {
+            let (r, w) = s.into_split();
+            (Some(r), Some(w))
+        }
+        None => {
+            log_d!(
+                "bypass TCP: no direct route to {}:{}, refusing",
+                std::net::Ipv4Addr::from(srv_ip),
+                srv_port
+            );
+            let rst = tcp_gen::build_tcp_packet(
+                srv_ip, cli_ip, srv_port, cli_port,
+                our_isn, expected, tcp_gen::RST | tcp_gen::ACK, 0, &[],
+            );
+            let _ = tun_tx.send(rst).await;
+            u.remove_flow(&key).await;
+            return;
+        }
+    };
+
+    // SYN-ACK: complete the handshake on behalf of the real destination.
+    let synack = tcp_gen::build_tcp_packet(
+        srv_ip, cli_ip, srv_port, cli_port,
+        our_isn, expected, tcp_gen::SYN | tcp_gen::ACK, 0xFFFF, &[],
+    );
+    if tun_tx.send(synack).await.is_err() {
+        u.remove_flow(&key).await;
+        return;
+    }
+
+    let mut rbuf = vec![0u8; 65536];
+    log_d!(
+        "bypass TCP flow: {}:{} → {}:{}",
+        std::net::Ipv4Addr::from(cli_ip),
+        cli_port,
+        std::net::Ipv4Addr::from(srv_ip),
+        srv_port
+    );
+
+    // Drain pending server data into segments (window permitting). Returns
+    // the crafted packets; updates our_seq/retrans/last_xmit.
+    macro_rules! flush_pending {
+        () => {{
+            let in_flight = our_seq.wrapping_sub(snd_una);
+            let pkts = take_data_segments(
+                &mut pending, &mut retrans, &mut our_seq, expected, in_flight,
+                their_window, mss, srv_ip, srv_port, cli_ip, cli_port,
+            );
+            let sent = !pkts.is_empty();
+            for p in pkts {
+                let _ = tun_tx.send(p).await;
+            }
+            if sent {
+                last_xmit = std::time::Instant::now();
+            }
+        }};
+    }
+
+    // Send our FIN once all server data is out and acked.
+    macro_rules! maybe_send_fin {
+        () => {
+            if server_eof && !fin_sent && pending.is_empty() && retrans.is_empty() {
+                let fin = tcp_gen::build_tcp_packet(
+                    srv_ip, cli_ip, srv_port, cli_port,
+                    our_seq, expected, tcp_gen::FIN | tcp_gen::ACK, 0xFFFF, &[],
+                );
+                let _ = tun_tx.send(fin).await;
+                our_seq = our_seq.wrapping_add(1);
+                fin_sent = true;
+                last_xmit = std::time::Instant::now();
+            }
+        };
+    }
+
+    loop {
+        // 4 Hz maintenance tick: retransmits, deferred FIN, idle reap.
+        let mut ticker = tokio::time::interval(Duration::from_millis(250));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        tokio::select! {
+            maybe_pkt = rx.recv() => {
+                let Some(pkt) = maybe_pkt else { break };
+                last_activity = std::time::Instant::now();
+                let Some(seg) = tcp_gen::parse_tcp(&pkt) else { continue };
+                if seg.flags & tcp_gen::RST != 0 {
+                    break;
+                }
+                if seg.flags & tcp_gen::SYN != 0 {
+                    // Handshake retransmit before our SYN-ACK arrived.
+                    if !established && seg.seq == cli_isn {
+                        let p = tcp_gen::build_tcp_packet(
+                            srv_ip, cli_ip, srv_port, cli_port,
+                            our_isn, expected, tcp_gen::SYN | tcp_gen::ACK, 0xFFFF, &[],
+                        );
+                        let _ = tun_tx.send(p).await;
+                    }
+                    continue;
+                }
+                if seg.flags & tcp_gen::ACK != 0 {
+                    if tcp_gen::seq_lt(snd_una, seg.ack) {
+                        snd_una = seg.ack;
+                        while let Some((seq, data)) = retrans.front() {
+                            if tcp_gen::seq_le(seq.wrapping_add(data.len() as u32), snd_una) {
+                                retrans.pop_front();
+                            } else {
+                                break;
+                            }
+                        }
+                        if retrans.is_empty() {
+                            retries = 0;
+                            rto = Duration::from_millis(1000);
+                        }
+                    }
+                    their_window = (seg.window as u32) << their_wscale;
+                    if !established && seg.ack == our_isn.wrapping_add(1) {
+                        established = true;
+                    }
+                }
+                let data = seg.payload(&pkt);
+                if !data.is_empty() {
+                    if seg.seq == expected {
+                        if let Some(w) = s_write.as_mut() {
+                            if w.write_all(data).await.is_err() {
+                                break;
+                            }
+                        }
+                        expected = expected.wrapping_add(data.len() as u32);
+                    } else if tcp_gen::seq_lt(seg.seq, expected) {
+                        // retransmit of data we already have → just re-ack
+                    } else {
+                        continue; // out of order → drop, wait for retransmit
+                    }
+                    let ack_pkt = tcp_gen::build_tcp_packet(
+                        srv_ip, cli_ip, srv_port, cli_port,
+                        our_seq, expected, tcp_gen::ACK, 0xFFFF, &[],
+                    );
+                    let _ = tun_tx.send(ack_pkt).await;
+                }
+                if seg.flags & tcp_gen::FIN != 0 && !client_fin {
+                    if seg.seq.wrapping_add(data.len() as u32) == expected {
+                        expected = expected.wrapping_add(1);
+                        client_fin = true;
+                        let ack_pkt = tcp_gen::build_tcp_packet(
+                            srv_ip, cli_ip, srv_port, cli_port,
+                            our_seq, expected, tcp_gen::ACK, 0xFFFF, &[],
+                        );
+                        let _ = tun_tx.send(ack_pkt).await;
+                        if let Some(w) = s_write.as_mut() {
+                            let _ = w.shutdown().await;
+                        }
+                    }
+                }
+                // An ACK may have opened the send window.
+                flush_pending!();
+                maybe_send_fin!();
+                // Fully closed in both directions and everything acked?
+                if client_fin && fin_sent && retrans.is_empty() && snd_una == our_seq {
+                    break;
+                }
+            }
+            r = async {
+                match s_read.as_mut() {
+                    Some(r) => r.read(&mut rbuf).await,
+                    None => std::future::pending::<io::Result<usize>>().await,
+                }
+            }, if s_read.is_some() => {
+                match r {
+                    Ok(0) => {
+                        // Real server closed: deliver FIN after pending data.
+                        s_read = None;
+                        server_eof = true;
+                        flush_pending!();
+                        maybe_send_fin!();
+                        if client_fin && fin_sent && retrans.is_empty() && snd_una == our_seq {
+                            break;
+                        }
+                    }
+                    Ok(n) => {
+                        pending.extend(rbuf[..n].iter().copied());
+                        flush_pending!();
+                    }
+                    Err(_) => break,
+                }
+            }
+            _ = ticker.tick() => {
+                // Retransmit our unacked data.
+                if !retrans.is_empty() && last_xmit.elapsed() > rto {
+                    if let Some((seq, payload)) = retrans.front().cloned() {
+                        let p = tcp_gen::build_tcp_packet(
+                            srv_ip, cli_ip, srv_port, cli_port,
+                            seq, expected, tcp_gen::PSH | tcp_gen::ACK, 0xFFFF, &payload,
+                        );
+                        let _ = tun_tx.send(p).await;
+                        retries += 1;
+                        rto = (rto * 2).min(Duration::from_secs(8));
+                        last_xmit = std::time::Instant::now();
+                        if retries > 6 {
+                            let rst = tcp_gen::build_tcp_packet(
+                                srv_ip, cli_ip, srv_port, cli_port,
+                                our_seq, expected, tcp_gen::RST | tcp_gen::ACK, 0, &[],
+                            );
+                            let _ = tun_tx.send(rst).await;
+                            break;
+                        }
+                    }
+                }
+                maybe_send_fin!();
+                // Idle timeout: nothing from either side for a long while.
+                if last_activity.elapsed() > Duration::from_secs(300) {
+                    log_d!("bypass TCP flow idle-expired");
+                    break;
+                }
+            }
+        }
+    }
+
+    u.remove_flow(&key).await;
+}
+
 #[no_mangle]
 pub extern "system" fn Java_com_forgefox_vpn_Core_startSshVpn(
     mut env: JNIEnv,
@@ -732,24 +1421,44 @@ except Exception as e:
                     }
                 });
 
-                // TUN → SSH: DNS interception + fake→real NAT.
+                // TUN → SSH: DNS interception + fake→real NAT + (in union
+                // mode) per-flow tunnel/bypass decisions.
                 let tx_engine = Arc::clone(&engine);
+                let union = Union::from_settings(&settings);
+                let tx_tun_tx = tun_w_tx.clone();
                 let tx_task = tokio::spawn(async move {
                     let mut buf = vec![0u8; 65535];
                     loop {
                         match tun_r.read(&mut buf).await {
                             Ok(0) => { log_d!("Tun read EOF"); break; }
                             Ok(n) => {
+                                // Destination BEFORE the DNS engine's fake→real
+                                // NAT: a fake dst means the domain matched a
+                                // selected zone — in union mode that wins over
+                                // the owner check for every app.
+                                let zone_dst = n >= 20 && {
+                                    let orig_dst = u32::from_be_bytes([buf[16], buf[17], buf[18], buf[19]]);
+                                    dns::is_fake_ip(orig_dst)
+                                };
                                 match tx_engine.lock().await.process_outbound(&mut buf[..n]) {
                                     OutAction::Drop => continue,
                                     OutAction::Dns(payload, cip, cport) => {
                                         if dns_tx.send((payload, cip, cport)).await.is_err() { break; }
                                     }
                                     OutAction::Forward => {
-                                        let len_bytes = (n as u16).to_be_bytes();
-                                        if s_tx.write_all(&len_bytes).await.is_err() { log_e!("Failed to write len to stream"); break; }
-                                        if s_tx.write_all(&buf[..n]).await.is_err() { log_e!("Failed to write pkt to stream"); break; }
-                                        if s_tx.flush().await.is_err() { log_e!("Failed to flush stream"); break; }
+                                        let to_tunnel = match &union {
+                                            Some(u) => {
+                                                let pkt = buf[..n].to_vec();
+                                                union_dispatch(u, &pkt, tx_tun_tx.clone(), zone_dst).await
+                                            }
+                                            None => true,
+                                        };
+                                        if to_tunnel {
+                                            let len_bytes = (n as u16).to_be_bytes();
+                                            if s_tx.write_all(&len_bytes).await.is_err() { log_e!("Failed to write len to stream"); break; }
+                                            if s_tx.write_all(&buf[..n]).await.is_err() { log_e!("Failed to write pkt to stream"); break; }
+                                            if s_tx.flush().await.is_err() { log_e!("Failed to flush stream"); break; }
+                                        }
                                     }
                                 }
                             }

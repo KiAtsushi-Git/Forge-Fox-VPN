@@ -46,6 +46,13 @@ object VpnConfig {
                 // (through a protected socket, outside the VPN).
                 put("dns_upstream", "8.8.8.8:53")
             }
+            // Union mode: Proxy split with BOTH apps and sites/zones selected.
+            // VpnService.Builder cannot express that union (an app filter
+            // applies to all routes), so the TUN takes everything and the
+            // native core routes each flow by destination + owner. The
+            // service re-confirms this flag when it opens the TUN.
+            val hasSiteEntries = SplitTunnel.siteEntries(prefs).isNotEmpty()
+            put("union_mode", splitEnabled && splitMode == 1 && apps.isNotEmpty() && hasSiteEntries)
         }
 
         // Site rules (domains / IPs / CIDRs) — enforced as routes on the

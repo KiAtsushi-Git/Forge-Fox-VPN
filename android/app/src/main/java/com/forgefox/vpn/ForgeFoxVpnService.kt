@@ -16,6 +16,14 @@ class ForgeFoxVpnService : VpnService() {
     private var trafficTimer: java.util.Timer? = null
     private var txBytes: Long = 0
     private var rxBytes: Long = 0
+    // Set by openTunCustom: true when the TUN was established in union mode
+    // (Proxy split with both apps and sites selected), so the JSON handed
+    // to the native core describes the TUN that was actually opened.
+    private var tunUnionMode = false
+    // Resolved site ranges for that TUN (start..end, IPv4 in a Long), sent to
+    // the core as `proxy_ranges` — in union mode routes enforce nothing, the
+    // core needs the ranges itself.
+    private var tunProxyRanges: List<Pair<Long, Long>> = emptyList()
 
     companion object {
         private const val TUN_MTU = 1400
@@ -105,11 +113,33 @@ class ForgeFoxVpnService : VpnService() {
                 updateNotification("Подключено ✓", true)
                 startTrafficTimer()
 
+                // The native core's union-mode callbacks (connection-owner
+                // lookup, selected-app check) need a Context from any thread.
+                Core.appContext = applicationContext
+
                 val json = org.json.JSONObject(sshConfigJson)
                 json.put("server_tun_ip", serverIp)
                 // The native core passes this to the server-side bridge
                 // (forgefox-bridge / python fallback) so both TUN ends agree.
                 json.put("mtu", TUN_MTU)
+                // Re-confirm union mode against the TUN that was opened:
+                // VpnConfig computed the flag when the intent was built, and
+                // in union mode the core must route per-flow (owner +
+                // destination) instead of forwarding everything.
+                json.put("union_mode", tunUnionMode)
+                if (tunUnionMode) {
+                    // Resolved site ranges as ["start","end"] IP pairs — the
+                    // format the core's Union engine expects.
+                    val rangesArr = org.json.JSONArray()
+                    tunProxyRanges.forEach { (s, e) ->
+                        rangesArr.put(
+                            org.json.JSONArray()
+                                .put(longToIp(s))
+                                .put(longToIp(e))
+                        )
+                    }
+                    json.put("proxy_ranges", rangesArr)
+                }
                 val finalSettingsJson = json.toString()
 
                 while (isRunning && generation == myGen) {
@@ -231,6 +261,10 @@ class ForgeFoxVpnService : VpnService() {
         }
     }
 
+    /** IPv4 held in the low 32 bits of a Long → dotted string. */
+    private fun longToIp(v: Long): String =
+        "${(v shr 24) and 0xFF}.${(v shr 16) and 0xFF}.${(v shr 8) and 0xFF}.${v and 0xFF}"
+
     fun performStop() {
         addLog("performStop()")
         isRunning = false
@@ -310,6 +344,7 @@ class ForgeFoxVpnService : VpnService() {
             val zones = SplitTunnel.zoneEntries(prefs)
             val dnsIntercept = splitEnabled && splitMode == 1 && zones.isNotEmpty()
             val dnsServerIp = "198.18.0.2"
+            tunUnionMode = false
 
             if (dnsIntercept) {
                 builder.addDnsServer(dnsServerIp)
@@ -331,28 +366,47 @@ class ForgeFoxVpnService : VpnService() {
 
                 if (splitMode == 1) {
                     // Proxy mode: Route ONLY the selected apps and/or sites
-                    var addedApps = 0
-                    for (pkg in apps) {
-                        try {
-                            builder.addAllowedApplication(pkg)
-                            addedApps++
-                        } catch (e: Exception) {
-                            addLog("App $pkg not found")
-                        }
-                    }
-                    // Selected apps get their full traffic through the VPN
-                    if (addedApps > 0) builder.addRoute("0.0.0.0", 0)
-                    // Selected sites get routed through the VPN
-                    SplitTunnel.addSiteRoutes(builder, sites)
-                    // Fake-IP pool for wildcard zones: every fake IP the DNS
-                    // interceptor hands out lives here, so newly resolved
-                    // zone domains are routed instantly without a TUN rebuild.
-                    if (dnsIntercept) builder.addRoute("198.18.0.0", 15)
-
-                    if (addedApps == 0 && sites.isEmpty() && !dnsIntercept) {
-                        addLog("Proxy mode with an empty list - no traffic will be routed!")
+                    val unionMode = apps.isNotEmpty() && (sites.isNotEmpty() || zones.isNotEmpty())
+                    if (unionMode) {
+                        // Union mode: BOTH apps and sites/zones are selected.
+                        // VpnService.Builder can't express "app OR destination"
+                        // — an allowed-application filter applies to every
+                        // route, so app+site routes would intersect, not
+                        // union. Instead the TUN takes everything and the
+                        // native core routes each flow by owner + destination,
+                        // re-originating non-matching flows through protected
+                        // sockets (userspace TCP termination).
+                        tunUnionMode = true
+                        tunProxyRanges = sites.map { it.start to it.end }
+                        builder.addRoute("0.0.0.0", 0)
+                        addLog(
+                            "Split tunneling (Proxy, union): ${apps.size} apps + ${sites.size} site ranges + " +
+                                "${zones.size} zones — per-flow routing in the core."
+                        )
                     } else {
-                        addLog("Split tunneling (Proxy): $addedApps apps + ${sites.size} site ranges + ${zones.size} zones through VPN.")
+                        var addedApps = 0
+                        for (pkg in apps) {
+                            try {
+                                builder.addAllowedApplication(pkg)
+                                addedApps++
+                            } catch (e: Exception) {
+                                addLog("App $pkg not found")
+                            }
+                        }
+                        // Selected apps get their full traffic through the VPN
+                        if (addedApps > 0) builder.addRoute("0.0.0.0", 0)
+                        // Selected sites get routed through the VPN
+                        SplitTunnel.addSiteRoutes(builder, sites)
+                        // Fake-IP pool for wildcard zones: every fake IP the DNS
+                        // interceptor hands out lives here, so newly resolved
+                        // zone domains are routed instantly without a TUN rebuild.
+                        if (dnsIntercept) builder.addRoute("198.18.0.0", 15)
+
+                        if (addedApps == 0 && sites.isEmpty() && !dnsIntercept) {
+                            addLog("Proxy mode with an empty list - no traffic will be routed!")
+                        } else {
+                            addLog("Split tunneling (Proxy): $addedApps apps + ${sites.size} site ranges + ${zones.size} zones through VPN.")
+                        }
                     }
                 } else {
                     // Bypass mode: Route EVERYTHING EXCEPT selected apps and sites
